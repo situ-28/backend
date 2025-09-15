@@ -28,13 +28,13 @@ const allowedOrigins = [
 
 console.log("✅ Allowed Origins:", allowedOrigins);
 
-// 🔧 CORS middleware
+// 🔧 CORS middleware (Express)
 app.use(
   cors({
     origin: function (origin, callback) {
       console.log("CORS origin:", origin);
 
-      // Allow requests with no origin (like mobile apps, curl)
+      // Allow requests with no origin (curl, mobile apps, etc.)
       if (!origin) return callback(null, true);
 
       // ✅ Match exact or RegExp origins
@@ -48,7 +48,7 @@ app.use(
       console.warn("❌ Blocked by CORS:", origin);
       return callback(new Error("Not allowed by CORS"));
     },
-    credentials: true, // 👈 IMPORTANT: allow cookies/auth headers
+    credentials: true, // 👈 IMPORTANT for cookies/auth
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   })
 );
@@ -76,7 +76,7 @@ app.get("/ok", (req, res) => {
 // 📡 Create HTTP server
 const server = createServer(app);
 
-// 🔥 Initialize Socket.io
+// 🔥 Initialize Socket.io with correct CORS
 const io = new Server(server, {
   pingTimeout: 60000,
   cors: {
