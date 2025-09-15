@@ -1,118 +1,120 @@
 // server.js
-
 import express from "express";
 import dotenv from "dotenv";
-import cors from "cors";
 import cookieParser from "cookie-parser";
 import { createServer } from "http";
 import { Server } from "socket.io";
-
-// Import custom route files
 import authRoute from "./rout/authRout.js";
 import userRoute from "./rout/userRout.js";
 import dbConnection from "./db/dbConnect.js";
 
-// ✅ Load environment variables
 dotenv.config();
 
-// 🌍 Create Express app
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// 📡 Allowed origins
-const allowedOrigins = [
-  process.env.FRONTEND_URL || "https://kaleidoscopic-piroshki-d93d39.netlify.app",
-  "http://localhost:5173", // for local dev
-  /\.ngrok-free\.app$/,    // allow ngrok tunnels
-];
+// Build whitelist from env / defaults
+const FRONTEND_URL = process.env.FRONTEND_URL || "https://kaleidoscopic-piroshki-d93d39.netlify.app";
+const whitelist = [
+  FRONTEND_URL,
+  // add other explicit domains if needed, e.g. local dev:
+  "http://localhost:5173",
+  "http://localhost:3000",
+].filter(Boolean);
 
-console.log("✅ Allowed Origins:", allowedOrigins);
+// optionally allow ngrok-like hostnames via regex
+const allowedRegex = /\.ngrok-free\.app$/;
 
-// 🔧 CORS middleware (Express)
-app.use(
-  cors({
-    origin: function (origin, callback) {
-      console.log("CORS origin:", origin);
+console.log("[CORS] Whitelist:", whitelist);
 
-      // Allow requests with no origin (curl, mobile apps, etc.)
-      if (!origin) return callback(null, true);
+// -- CORS middleware (manual, robust) --
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
 
-      // ✅ Match exact or RegExp origins
-      if (
-        allowedOrigins.includes(origin) ||
-        allowedOrigins.some((o) => o instanceof RegExp && o.test(origin))
-      ) {
-        return callback(null, origin); // return the exact origin
-      }
+  // If no origin (curl, mobile, same-origin server-side) allow it
+  if (!origin) return next();
 
-      console.warn("❌ Blocked by CORS:", origin);
-      return callback(new Error("Not allowed by CORS"));
-    },
-    credentials: true, // 👈 IMPORTANT for cookies/auth
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-  })
-);
+  // Check whitelist or regex
+  const isWhitelisted = whitelist.includes(origin) || allowedRegex.test(origin);
 
-// ✅ Handle preflight OPTIONS requests
-app.options("*", cors());
+  if (isWhitelisted) {
+    // MUST echo the origin when using credentials
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+    res.setHeader("Vary", "Origin");
+    res.setHeader(
+      "Access-Control-Allow-Methods",
+      "GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS"
+    );
+    res.setHeader(
+      "Access-Control-Allow-Headers",
+      "Authorization,Origin,X-Requested-With,Content-Type,Accept"
+    );
 
-// 🛠 Middleware
+    // Respond to preflight immediately
+    if (req.method === "OPTIONS") {
+      return res.sendStatus(204);
+    }
+
+    return next();
+  } else {
+    // Explicitly forbid
+    console.warn(`[CORS] Blocked origin: ${origin}`);
+    return res.status(403).json({ message: "CORS Forbidden" });
+  }
+});
+
+// Body + cookie parsers
 app.use(express.json());
 app.use(cookieParser());
 
-// 🔗 API routes
+// Your routes
 app.use("/api/auth", authRoute);
 app.use("/api/user", userRoute);
 
-// ✅ Test routes
-app.get("/", (req, res) => {
-  res.send("Server is running!");
-});
+app.get("/", (req, res) => res.send("Server is running!"));
+app.get("/ok", (req, res) => res.json({ message: "Server is running!" }));
 
-app.get("/ok", (req, res) => {
-  res.json({ message: "Server is running!" });
-});
-
-// 📡 Create HTTP server
+// Create HTTP server
 const server = createServer(app);
 
-// 🔥 Initialize Socket.io with correct CORS
+// Socket.io with a function-based origin check
 const io = new Server(server, {
   pingTimeout: 60000,
   cors: {
-    origin: function (origin, callback) {
+    origin: (origin, callback) => {
+      // origin may be undefined for non-browser clients; allow it
       if (!origin) return callback(null, true);
-      if (
-        allowedOrigins.includes(origin) ||
-        allowedOrigins.some((o) => o instanceof RegExp && o.test(origin))
-      ) {
-        return callback(null, origin);
+      if (whitelist.includes(origin) || allowedRegex.test(origin)) {
+        return callback(null, true);
+      } else {
+        console.warn("[Socket.IO] Blocked origin:", origin);
+        return callback(new Error("Not allowed by CORS"));
       }
-      return callback(new Error("Not allowed by CORS"));
     },
-    credentials: true,
     methods: ["GET", "POST"],
+    credentials: true,
   },
 });
 
 console.log("[SUCCESS] Socket.io initialized with CORS");
 
-// 🟢 Store online users and active calls
+// socket.io logic (your original code)
 let onlineUsers = [];
 const activeCalls = new Map();
 
-// 📞 Socket.io connections
 io.on("connection", (socket) => {
   console.log(`[INFO] New connection: ${socket.id}`);
   socket.emit("me", socket.id);
 
+  // join
   socket.on("join", (user) => {
     if (!user || !user.id) return;
     socket.join(user.id);
 
     const existingUser = onlineUsers.find((u) => u.userId === user.id);
     if (existingUser) existingUser.socketId = socket.id;
-    else onlineUsers.push({ userId: user.id, name: user.name, socketId: socket.id });
+    else onlineUsers.push({ userId: user.id, name: user?.name, socketId: socket.id });
 
     io.emit("online-users", onlineUsers);
   });
@@ -162,7 +164,7 @@ io.on("connection", (socket) => {
   });
 });
 
-// 🏁 Start server after DB connection
+// Start server after DB connect
 (async () => {
   try {
     await dbConnection();
