@@ -1,4 +1,5 @@
-// Import required modules
+// server.js
+
 import express from "express";
 import dotenv from "dotenv";
 import cors from "cors";
@@ -14,27 +15,24 @@ import dbConnection from "./db/dbConnect.js";
 // ✅ Load environment variables
 dotenv.config();
 
-// 🌍 Create an Express application
+// 🌍 Create Express app
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// 📡 Create an HTTP server
-const server = createServer(app);
-
-// 🌍 Allowed origins
+// 📡 Allowed origins
 const allowedOrigins = [
-  process.env.FRONTEND_URL, // your local dev frontend, e.g. http://localhost:5173
-  /\.ngrok-free\.app$/      // ✅ allow all ngrok tunnels automatically
+  process.env.FRONTEND_URL || "https://kaleidoscopic-piroshki-d93d39.netlify.app", 
+  /\.ngrok-free\.app$/
 ];
 
 console.log("✅ Allowed Origins:", allowedOrigins);
 
-// 🔧 Middleware to handle CORS
+// 🔧 CORS middleware
 app.use(
   cors({
     origin: function (origin, callback) {
-      if (!origin) return callback(null, true); // allow mobile apps / curl / no-origin requests
-
+      console.log("CORS origin:", origin);
+      if (!origin) return callback(null, true); // allow mobile apps / curl / no-origin
       if (
         allowedOrigins.includes(origin) ||
         allowedOrigins.some((o) => o instanceof RegExp && o.test(origin))
@@ -57,112 +55,79 @@ app.options("*", cors());
 app.use(express.json());
 app.use(cookieParser());
 
-// 🔗 Define API routes
+// 🔗 API routes
 app.use("/api/auth", authRoute);
 app.use("/api/user", userRoute);
 
 // ✅ Test route
+app.get("/", (req, res) => {
+  res.send("Server is running!"); // returns text directly
+});
+
 app.get("/ok", (req, res) => {
   res.json({ message: "Server is running!" });
 });
+
+// 📡 Create HTTP server
+const server = createServer(app);
 
 // 🔥 Initialize Socket.io
 const io = new Server(server, {
   pingTimeout: 60000,
   cors: {
-    origin: [
-      process.env.FRONTEND_URL,
-      /\.ngrok-free\.app$/ // ✅ allow all ngrok tunnels
-    ],
+    origin: allowedOrigins,
     methods: ["GET", "POST"],
     credentials: true,
   },
 });
+
 console.log("[SUCCESS] Socket.io initialized with CORS");
 
 // 🟢 Store online users and active calls
 let onlineUsers = [];
 const activeCalls = new Map();
 
-// 📞 Handle Socket.io connections
+// 📞 Socket.io connections
 io.on("connection", (socket) => {
   console.log(`[INFO] New connection: ${socket.id}`);
-
   socket.emit("me", socket.id);
 
   socket.on("join", (user) => {
-    if (!user || !user.id) {
-      console.warn("[WARNING] Invalid user data on join");
-      return;
-    }
-
+    if (!user || !user.id) return;
     socket.join(user.id);
 
     const existingUser = onlineUsers.find((u) => u.userId === user.id);
-
-    if (existingUser) {
-      existingUser.socketId = socket.id;
-    } else {
-      onlineUsers.push({
-        userId: user.id,
-        name: user.name,
-        socketId: socket.id,
-      });
-    }
+    if (existingUser) existingUser.socketId = socket.id;
+    else onlineUsers.push({ userId: user.id, name: user.name, socketId: socket.id });
 
     io.emit("online-users", onlineUsers);
   });
 
   socket.on("callToUser", (data) => {
-    const callee = onlineUsers.find((user) => user.userId === data.callToUserId);
-
-    if (!callee) {
-      socket.emit("userUnavailable", { message: "User is offline." });
-      return;
-    }
+    const callee = onlineUsers.find((u) => u.userId === data.callToUserId);
+    if (!callee) return socket.emit("userUnavailable", { message: "User is offline." });
 
     if (activeCalls.has(data.callToUserId)) {
-      socket.emit("userBusy", { message: "User is currently in another call." });
-      io.to(callee.socketId).emit("incomingCallWhileBusy", {
-        from: data.from,
-        name: data.name,
-        email: data.email,
-        profilepic: data.profilepic,
-      });
+      socket.emit("userBusy", { message: "User is in another call." });
+      io.to(callee.socketId).emit("incomingCallWhileBusy", data);
       return;
     }
 
-    io.to(callee.socketId).emit("callToUser", {
-      signal: data.signalData,
-      from: data.from,
-      name: data.name,
-      email: data.email,
-      profilepic: data.profilepic,
-    });
+    io.to(callee.socketId).emit("callToUser", data);
   });
 
   socket.on("answeredCall", (data) => {
-    io.to(data.to).emit("callAccepted", {
-      signal: data.signal,
-      from: data.from,
-    });
-
+    io.to(data.to).emit("callAccepted", { signal: data.signal, from: data.from });
     activeCalls.set(data.from, { with: data.to, socketId: socket.id });
     activeCalls.set(data.to, { with: data.from, socketId: data.to });
   });
 
   socket.on("reject-call", (data) => {
-    io.to(data.to).emit("callRejected", {
-      name: data.name,
-      profilepic: data.profilepic,
-    });
+    io.to(data.to).emit("callRejected", data);
   });
 
   socket.on("call-ended", (data) => {
-    io.to(data.to).emit("callEnded", {
-      name: data.name,
-    });
-
+    io.to(data.to).emit("callEnded", data);
     activeCalls.delete(data.from);
     activeCalls.delete(data.to);
   });
@@ -176,12 +141,9 @@ io.on("connection", (socket) => {
       }
     }
 
-    onlineUsers = onlineUsers.filter((user) => user.socketId !== socket.id);
-
+    onlineUsers = onlineUsers.filter((u) => u.socketId !== socket.id);
     io.emit("online-users", onlineUsers);
-
-    socket.broadcast.emit("discounnectUser", { disUser: socket.id });
-
+    socket.broadcast.emit("disconnectUser", { disUser: socket.id });
     console.log(`[INFO] Disconnected: ${socket.id}`);
   });
 });
@@ -190,8 +152,8 @@ io.on("connection", (socket) => {
 (async () => {
   try {
     await dbConnection();
-    server.listen(PORT, () => {
-      console.log(`✅ Server is running on port ${PORT}`);
+    server.listen(PORT, "0.0.0.0", () => {
+      console.log(`✅ Server is running on http://0.0.0.0:${PORT}`);
     });
   } catch (error) {
     console.error("❌ Failed to connect to the database:", error);
