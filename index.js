@@ -21,8 +21,9 @@ const PORT = process.env.PORT || 3000;
 
 // 📡 Allowed origins
 const allowedOrigins = [
-  process.env.FRONTEND_URL || "https://kaleidoscopic-piroshki-d93d39.netlify.app", 
-  /\.ngrok-free\.app$/
+  process.env.FRONTEND_URL || "https://kaleidoscopic-piroshki-d93d39.netlify.app",
+  "http://localhost:5173", // for local dev
+  /\.ngrok-free\.app$/,    // allow ngrok tunnels
 ];
 
 console.log("✅ Allowed Origins:", allowedOrigins);
@@ -32,18 +33,22 @@ app.use(
   cors({
     origin: function (origin, callback) {
       console.log("CORS origin:", origin);
-      if (!origin) return callback(null, true); // allow mobile apps / curl / no-origin
+
+      // Allow requests with no origin (like mobile apps, curl)
+      if (!origin) return callback(null, true);
+
+      // ✅ Match exact or RegExp origins
       if (
         allowedOrigins.includes(origin) ||
         allowedOrigins.some((o) => o instanceof RegExp && o.test(origin))
       ) {
-        return callback(null, true);
-      } else {
-        console.warn("❌ Blocked by CORS:", origin);
-        return callback(new Error("Not allowed by CORS"));
+        return callback(null, origin); // return the exact origin
       }
+
+      console.warn("❌ Blocked by CORS:", origin);
+      return callback(new Error("Not allowed by CORS"));
     },
-    credentials: true,
+    credentials: true, // 👈 IMPORTANT: allow cookies/auth headers
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   })
 );
@@ -59,9 +64,9 @@ app.use(cookieParser());
 app.use("/api/auth", authRoute);
 app.use("/api/user", userRoute);
 
-// ✅ Test route
+// ✅ Test routes
 app.get("/", (req, res) => {
-  res.send("Server is running!"); // returns text directly
+  res.send("Server is running!");
 });
 
 app.get("/ok", (req, res) => {
@@ -75,9 +80,18 @@ const server = createServer(app);
 const io = new Server(server, {
   pingTimeout: 60000,
   cors: {
-    origin: allowedOrigins,
-    methods: ["GET", "POST"],
+    origin: function (origin, callback) {
+      if (!origin) return callback(null, true);
+      if (
+        allowedOrigins.includes(origin) ||
+        allowedOrigins.some((o) => o instanceof RegExp && o.test(origin))
+      ) {
+        return callback(null, origin);
+      }
+      return callback(new Error("Not allowed by CORS"));
+    },
     credentials: true,
+    methods: ["GET", "POST"],
   },
 });
 
